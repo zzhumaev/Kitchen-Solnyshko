@@ -2,6 +2,7 @@ name: Deploy to VPS
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -22,17 +23,12 @@ jobs:
           key_path: key.pem
           port: ${{ secrets.SSH_PORT || 22 }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # Копируем только то, что нужно. .git и .env НЕ едет.
-          source: |
-            backend
-            compose.yml
-            compose.dev.yml
-            docs
-            .gitignore
+          # ВАЖНО: одна строка через запятую
+          source: "backend/**,compose.yml,compose.dev.yml,docs/**,.gitignore"
           target: /opt/kitchen
           rm: false
           strip_components: 0
-          overwrite: true     # на всякий случай, разрешаем перезапись обычных файлов
+          overwrite: true
 
       - name: Build & restart with Docker
         uses: appleboy/ssh-action@v1.0.3
@@ -44,5 +40,6 @@ jobs:
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -e
+            mkdir -p /opt/kitchen
             cd /opt/kitchen
             docker compose up -d --build
