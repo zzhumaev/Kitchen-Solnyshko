@@ -1,0 +1,36 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: kitchen
+      POSTGRES_USER: kitchen
+      POSTGRES_PASSWORD: change_me
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    # оставим порт только на localhost (чтобы не светить наружу)
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    env_file: .env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - db
+    # публикуем API только на loopback
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  bot:
+    build: ./backend
+    env_file: .env
+    command: python -m app.bot
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  dbdata:
