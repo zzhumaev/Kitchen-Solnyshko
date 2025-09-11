@@ -1,0 +1,38 @@
+name: Deploy to VPS
+on: { push: { branches: [ "main" ] } }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "."
+          target: "/opt/kitchen"
+          rm: false
+          strip_components: 0
+          exclude: |
+            .git
+            .github
+            **/__pycache__
+            **/*.pyc
+            **/.env
+            **/.env.*
+            node_modules
+            dist
+      - name: Build & restart with Docker
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd /opt/kitchen
+            docker compose up -d --build
