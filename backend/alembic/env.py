@@ -1,30 +1,36 @@
 import os, sys
 from pathlib import Path
 from logging.config import fileConfig
-from app.db.base import Base
-from app.db import models  # noqa
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# === СДЕЛАТЬ /app видимым для Python ===
-BASE_DIR = Path(__file__).resolve().parents[1]  # /app
+# === Сделать /app видимым для Python ===
+BASE_DIR = Path(__file__).resolve().parents[1]  # -> /app
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-# === Импорт Base.metadata из твоего проекта ===
-# Попробуем несколько мест — оставь то, где реально лежит Base
-c
-config = context.config
+# === Импорты проекта ===
+from app.db.base import Base  # noqa: F401
 
-# URL берём из переменной окружения (DATABASE_URL приходит из .env)
-db_url = os.getenv("DATABASE_URL", "")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+# Подтянуть модели, если есть (оба варианта путей)
+for mod in ("app.models", "app.db.models"):
+    try:
+        __import__(mod)
+    except Exception as e:
+        print(f"[alembic] warn: cannot import {mod}: {e}")
+
+# Alembic config
+config = context.config
 
 # Логи Alembic из alembic.ini
 if config.config_file_name:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
+
+# URL БД из окружения контейнера
+db_url = os.getenv("DATABASE_URL", "")
+if db_url:
+    config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata
 
@@ -36,6 +42,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         compare_type=True,
         compare_server_default=True,
+        dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -45,7 +52,6 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        future=True,
     )
     with connectable.connect() as connection:
         context.configure(
