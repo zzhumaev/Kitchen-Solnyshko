@@ -22,10 +22,19 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}     # inline ключ (не key_path)
-          port: ${{ secrets.SSH_PORT || 22 }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "backend/**,compose.yml,compose.dev.yml,docs/**,.gitignore"
+          source: |
+            backend/Dockerfile
+            backend/alembic
+            backend/alembic.ini
+            backend/app
+            backend/requirements.txt
+            compose.yml
+            compose.dev.yml
+            docs/TZ.md
+            .gitignore
           target: /opt/kitchen
           overwrite: true
           rm: false
@@ -38,9 +47,27 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT || '22' }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
             cd /opt/kitchen
             docker compose up -d --build
+
+      - name: Migrate DB & health check
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          script: |
+            set -euo pipefail
+            cd /opt/kitchen
+            # ждём postgres
+            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            # применяем миграции
+            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
+            # health-check API на хосте
+            curl -fsS http://127.0.0.1:8000/docs >/dev/null && echo "API OK"
