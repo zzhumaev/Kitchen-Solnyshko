@@ -3,7 +3,7 @@ from sqlalchemy import (
     UniqueConstraint, func
 )
 from sqlalchemy.orm import relationship
-from .db import Base
+from app.db.base import Base
 import enum
 
 class Unit(Base):

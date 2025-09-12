@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Response
-from .db import engine, Base
+from app.db.session import engine
+from app.db.base import Base
 from .routers import units, products, locations, stock, documents
 from fastapi import FastAPI
 from app.routers import reports

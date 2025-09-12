@@ -2,6 +2,6 @@ from fastapi import APIRouter
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-@router.get("/health")
-def health():
+@router.get("/ping")
+def ping():
     return {"status": "ok"}

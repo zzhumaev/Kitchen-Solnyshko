@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from .. import models, schemas
+from app import models, schemas
 from ..deps import get_db
 
 router = APIRouter(prefix="/units", tags=["units"])
