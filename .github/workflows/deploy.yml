@@ -11,7 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # (опционально) диагностика, чтобы не было "tar: empty archive"
       - name: List files
         run: |
           pwd
@@ -23,15 +22,10 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}           # <— используем inline-ключ вместо key_path
+          key: ${{ secrets.SSH_KEY }}     # inline ключ (не key_path)
           port: ${{ secrets.SSH_PORT || 22 }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: |
-            backend
-            compose.yml
-            compose.dev.yml
-            docs
-            .gitignore
+          source: "backend/**,compose.yml,compose.dev.yml,docs/**,.gitignore"
           target: /opt/kitchen
           overwrite: true
           rm: false
