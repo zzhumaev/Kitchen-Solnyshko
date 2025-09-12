@@ -1,7 +1,8 @@
 name: Deploy to VPS
+
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -10,30 +11,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # (опционально) диагностика, чтобы не было "tar: empty archive"
+      - name: List files
+        run: |
+          pwd
+          ls -la
+          test -d backend || (echo "backend/ not found" && exit 1)
+
       - name: Upload files to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}          # <-- передаём ключ напрямую
+          key: ${{ secrets.SSH_KEY }}           # <— используем inline-ключ вместо key_path
           port: ${{ secrets.SSH_PORT || 22 }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "backend/**,compose.yml,compose.dev.yml,docs/**,.gitignore"
+          source: |
+            backend
+            compose.yml
+            compose.dev.yml
+            docs
+            .gitignore
           target: /opt/kitchen
+          overwrite: true
           rm: false
           strip_components: 0
-          overwrite: true
+          debug: true
 
       - name: Build & restart with Docker
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}          # <-- и здесь тоже
+          key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
-            set -e
-            mkdir -p /opt/kitchen
+            set -euo pipefail
             cd /opt/kitchen
             docker compose up -d --build
