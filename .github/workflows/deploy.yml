@@ -23,17 +23,13 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || '22' }}
+          port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           source: |
-            backend/Dockerfile
-            backend/alembic
-            backend/alembic.ini
-            backend/app
-            backend/requirements.txt
+            backend
             compose.yml
             compose.dev.yml
-            docs/TZ.md
+            docs
             .gitignore
           target: /opt/kitchen
           overwrite: true
@@ -47,7 +43,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || '22' }}
+          port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
@@ -60,14 +56,14 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || '22' }}
+          port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
             cd /opt/kitchen
-            # ждём postgres
+            # ждём Postgres
             until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
             # применяем миграции
             docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
-            # health-check API на хосте
+            # быстрый health-check API на сервере
             curl -fsS http://127.0.0.1:8000/docs >/dev/null && echo "API OK"
