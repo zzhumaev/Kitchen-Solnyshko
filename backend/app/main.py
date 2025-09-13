@@ -4,6 +4,7 @@ from app.db.base import Base
 from .routers import units, products, locations, stock, documents
 from fastapi import FastAPI
 from app.routers import reports
+from app.startup_bootstrap import ensure_bootstrap_api_key
 
 app = FastAPI()
 app.include_router(reports.router)
@@ -15,6 +16,10 @@ def health():
 @app.head("/health")
 def health_head():
     return Response(status_code=200)
+
+@app.on_event("startup")
+def _bootstrap_api_key():
+    ensure_bootstrap_api_key()
 
 @app.on_event("startup")
 def on_startup():
