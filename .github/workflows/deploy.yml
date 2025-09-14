@@ -9,43 +9,33 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      # 👇 Диагностика содержимого workspace
       - name: Show workspace tree
         run: |
-          echo "PWD:"
           pwd
-          echo "ROOT:"
           ls -la
-          echo "---- backend ----"
-          ls -la backend || true
-          echo "---- docs ----"
-          ls -la docs || true
-          echo "---- compose files ----"
-          ls -la compose.yml compose.dev.yml || true
+          git rev-parse --short HEAD
 
-      - name: Upload files to VPS
-        uses: appleboy/scp-action@v0.1.7
+      - name: Deploy via SSH (git pull on server)
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # 👇 Явные glob'ы, чтобы избежать "tar: empty archive"
-          source: |
-            backend/**
-            docs/**
-            compose.yml
-            compose.dev.yml
-            .gitignore
-          target: /opt/kitchen
-          overwrite: true
-          rm: false
-          strip_components: 0
-          debug: true
-
-      - name: Build & restart with Docker
-        uses: appleboy/ssh-action@v1.0.3
-        with:
+          script: |
+            set -euo pipefail
+            cd /opt/kitchen
+            if [ -d .git ]; then
+              git fetch --all
+              git reset --hard origin/main
+            else
+              git clone --depth=1 --branch main ${{ secrets.GIT_REPO_SSH }} /opt/kitchen
+            fi
+            docker compose up -d --build
+            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
+            curl -fsS http://127.0.0.1:8000/docs >/dev/null && echo "API OK"
