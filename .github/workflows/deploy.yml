@@ -1,81 +1,91 @@
-kind: pipeline
-type: docker
-name: deploy
+name: Deploy to VPS
 
-steps:
-  - name: show-workspace
-    image: alpine:3.20
-    commands:
-      - pwd
-      - ls -la
-      - echo "---- backend ----"; ls -la backend || true
-      - echo "---- docs ----"; ls -la docs || true
-      - echo "---- compose files ----"; ls -la compose.yml compose.dev.yml || true
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-  - name: make-tarball
-    image: alpine:3.20
-    commands:
-      - set -e
-      - apk add --no-cache tar
-      # проверим, что есть compose.yml
-      - test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-      # собираем релиз
-      - tar -czf release.tgz \
-          --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
-          backend docs compose.yml compose.dev.yml 2>/dev/null || true
-      - ls -lh release.tgz
-      - test -s release.tgz || { echo "release.tgz is empty"; exit 1; }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-  - name: upload
-    image: appleboy/drone-scp:v1.6.14
-    settings:
-      host:
-        from_secret: ssh_host
-      username:
-        from_secret: ssh_user
-      key:
-        from_secret: ssh_key
-      port:
-        from_secret: ssh_port
-      target: /tmp
-      source:
-        - release.tgz
-      rm: false
-      debug: true
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-  - name: deploy-on-vps
-    image: appleboy/drone-ssh:1.6.7
-    settings:
-      host:
-        from_secret: ssh_host
-      username:
-        from_secret: ssh_user
-      key:
-        from_secret: ssh_key
-      port:
-        from_secret: ssh_port
-      script:
-        - set -euo pipefail
-        - APP_DIR="/opt/kitchen"
-        - TARBALL="/tmp/release.tgz"
-        - BACKUP="/opt/kitchen.bak.$(date +%Y%m%d-%H%M%S)"
-        - echo "→ Бэкапим текущий /opt/kitchen в $BACKUP (если есть)"
-        - if [ -d "$APP_DIR" ]; then cp -a "$APP_DIR" "$BACKUP"; else mkdir -p "$APP_DIR"; fi
-        - rollback() { echo "!! Ошибка. Откат до бэкапа"; rm -rf "$APP_DIR"; mv "$BACKUP" "$APP_DIR"; exit 1; }
-        - trap 'rollback' ERR
-        - echo "→ Чистим и раскладываем новый релиз"
-        - rm -rf "$APP_DIR"/*
-        - tar -xzf "$TARBALL" -C "$APP_DIR"
-        # вернуть локальный .env, если он лежал в /opt/kitchen/.env
-        - if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then cp "$BACKUP/.env" "$APP_DIR/.env"; fi
-        - cd "$APP_DIR"
-        - echo "→ docker compose up -d --build"
-        - docker compose up -d --build
-        - echo "→ Ждём PostgreSQL и миграции"
-        - until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
-        - docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
-        - echo "→ Healthcheck API"
-        - curl -fsS http://127.0.0.1:8000/docs >/dev/null
-        - echo "→ Удаляем бэкап (успех)"
-        - rm -rf "$BACKUP"
-        - echo "✅ Deploy OK"
+      - name: Make release tarball
+        run: |
+          set -euo pipefail
+          RELEASE="/tmp/release-${GITHUB_SHA}.tgz"
+          # убеждаемся, что есть compose.yml
+          test -e compose.yml || { echo "compose.yml not found"; exit 1; }
+          # собираем архив из нужных путей
+          tar -czf "$RELEASE" \
+            --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
+            backend docs compose.yml compose.dev.yml 2>/dev/null || true
+          ls -lh "$RELEASE"
+          test -s "$RELEASE" || { echo "release tgz is empty"; exit 1; }
+
+      - name: Upload tarball via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          source: "/tmp/release-${{ github.sha }}.tgz"
+          target: "/tmp"
+          overwrite: true
+          rm: false
+          debug: true
+
+      - name: Deploy on VPS (unpack, compose up, migrate, healthcheck)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          script: |
+            set -euo pipefail
+            APP_DIR="/opt/kitchen"
+            TARBALL="/tmp/release-${GITHUB_SHA}.tgz"
+            BACKUP="/opt/kitchen.bak.$(date +%Y%m%d-%H%M%S)"
+
+            echo "→ Бэкапим текущий /opt/kitchen (если есть) в $BACKUP"
+            if [ -d "$APP_DIR" ]; then cp -a "$APP_DIR" "$BACKUP"; else mkdir -p "$APP_DIR"; fi
+
+            rollback() {
+              echo "!! Ошибка. Откат до бэкапа"
+              rm -rf "$APP_DIR"
+              mv "$BACKUP" "$APP_DIR"
+              exit 1
+            }
+            trap 'rollback' ERR
+
+            echo "→ Чистим и раскладываем новый релиз"
+            rm -rf "$APP_DIR"/*
+            tar -xzf "$TARBALL" -C "$APP_DIR"
+
+            # вернуть локальный .env, если он хранится на сервере
+            if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
+              cp "$BACKUP/.env" "$APP_DIR/.env"
+            fi
+
+            cd "$APP_DIR"
+
+            # Если хочешь слушать только локально за Nginx, поставь 127.0.0.1:8000 в compose.yml
+            echo "→ docker compose up -d --build"
+            docker compose up -d --build
+
+            echo "→ Ждём PostgreSQL и прогоняем миграции"
+            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
+
+            echo "→ Healthcheck API"
+            curl -fsS http://127.0.0.1:8000/docs >/dev/null
+
+            echo "→ Удаляем бэкап (успех)"
+            rm -rf "$BACKUP"
+
+            echo "✅ Deploy OK"
