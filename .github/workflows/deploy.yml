@@ -39,17 +39,14 @@ jobs:
 
       - name: Deploy on VPS (unpack, compose up, migrate, healthcheck)
         uses: appleboy/ssh-action@v1.0.3
-        # 1) переменная доступна шагу экшена
         env:
-          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}
+          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}   # можно убрать, если настроишь NOPASSWD
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # 2) и явно прокидываем её внутрь SSH-сессии
           envs: SUDO_PASSWORD
-          # если SSH не на 22: port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
             SHA="${{ github.sha }}"
@@ -58,31 +55,44 @@ jobs:
             TARBALL="/tmp/release-${SHA}.tgz"
             BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
-            # helper: sudo с паролем из секрета
-            s() { echo "${SUDO_PASSWORD}" | sudo -S -p "" "$@"; }
+            # sudo helper: сначала пробуем без пароля (NOPASSWD), потом с паролем
+            s() {
+              if sudo -n true 2>/dev/null; then
+                sudo "$@"
+              else
+                if [ -z "${SUDO_PASSWORD:-}" ]; then
+                  echo "ERROR: SUDO_PASSWORD is not set and NOPASSWD is not enabled for $(whoami)" >&2
+                  exit 1
+                fi
+                echo "${SUDO_PASSWORD}" | sudo -S -p "" "$@"
+              fi
+            }
 
-            echo "→ Проверяем архив на сервере:"
+            echo "→ Preflight:"
+            whoami
+            id
+            echo "→ Archive on server:"
             ls -lh "$TARBALL"
 
-            echo "→ Готовим каталоги"
+            echo "→ Prepare dirs"
             s mkdir -p "$APP_DIR" "$BACKUPS"
 
-            echo "→ Бэкапим $APP_DIR → $BACKUP"
+            echo "→ Backup $APP_DIR → $BACKUP"
             s cp -a "$APP_DIR" "$BACKUP" || true
 
             rollback() {
-              echo "!! Ошибка. Откат: восстанавливаем из бэкапа"
+              echo "!! Rollback: restore from backup"
               s rm -rf "$APP_DIR"
               s cp -a "$BACKUP" "$APP_DIR"
               exit 1
             }
             trap 'rollback' ERR
 
-            echo "→ Раскладываем новый релиз"
+            echo "→ Unpack new release"
             s rm -rf "${APP_DIR:?}"/*
             s tar -xzf "$TARBALL" -C "$APP_DIR"
 
-            # вернуть локальный .env, если он лежал на сервере
+            # restore .env if existed on server
             if s test -f "$BACKUP/.env" && ! s test -f "$APP_DIR/.env"; then
               s cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
@@ -92,14 +102,14 @@ jobs:
             echo "→ docker compose up -d --build"
             s docker compose up -d --build
 
-            echo "→ Ждём PostgreSQL и прогоняем миграции"
+            echo "→ Wait DB & run migrations"
             until s docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
             s docker compose exec -T api alembic upgrade head || s docker compose run --rm api alembic upgrade head
 
-            echo "→ Healthcheck API"
+            echo "→ Healthcheck"
             curl -fsS http://127.0.0.1:8000/docs >/dev/null
 
-            echo "→ Чистим бэкап (успех)"
+            echo "→ Cleanup backup (success)"
             s rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
