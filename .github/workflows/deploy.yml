@@ -16,10 +16,10 @@ jobs:
       - name: Make release tarball
         run: |
           set -euo pipefail
-          RELEASE="release-${GITHUB_SHA}.tgz"   # кладём архив в корень workspace
-          # убедимся, что compose.yml существует
+          RELEASE="release-${GITHUB_SHA}.tgz"   # архив в корне workspace
+          # проверяем, что есть compose.yml
           test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-          # собираем архив; отсутствующие пути не ломают сборку
+          # собираем архив; отсутствующие пути не критичны
           tar -czf "$RELEASE" \
             --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
             backend docs compose.yml compose.dev.yml 2>/dev/null || true
@@ -33,7 +33,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "release-${{ github.sha }}.tgz"   # относительный путь внутри workspace
+          source: "release-${{ github.sha }}.tgz"   # относительный путь в workspace
           target: "/tmp"
           overwrite: true
           rm: false
@@ -46,49 +46,55 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          # если SSH у тебя НЕ на 22 порту, добавь: port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
-            SHA="${{ github.sha }}"                       # берём SHA из GitHub Actions
+            SHA="${{ github.sha }}"
             APP_DIR="/opt/kitchen"
+            BACKUPS="/opt/kitchen_backups"
             TARBALL="/tmp/release-${SHA}.tgz"
-            BACKUP="/opt/kitchen.bak.$(date +%Y%m%d-%H%M%S)"
+            BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
-            echo "→ Проверяем, что архив есть на сервере:"
+            echo "→ Проверяем архив на сервере:"
             ls -lh "$TARBALL"
 
-            echo "→ Бэкапим текущий /opt/kitchen (если есть) в $BACKUP"
-            if [ -d "$APP_DIR" ]; then cp -a "$APP_DIR" "$BACKUP"; else mkdir -p "$APP_DIR"; fi
+            echo "→ Готовим каталоги (sudo)"
+            sudo mkdir -p "$APP_DIR" "$BACKUPS"
+
+            echo "→ Бэкапим $APP_DIR → $BACKUP (sudo)"
+            # -a сохраняет права/владельцев; в /opt нужны root-права
+            sudo cp -a "$APP_DIR" "$BACKUP" || true
 
             rollback() {
-              echo "!! Ошибка. Откат до бэкапа"
-              rm -rf "$APP_DIR"
-              mv "$BACKUP" "$APP_DIR"
+              echo "!! Ошибка. Откат: восстанавливаем из бэкапа"
+              sudo rm -rf "$APP_DIR"
+              sudo cp -a "$BACKUP" "$APP_DIR"
               exit 1
             }
             trap 'rollback' ERR
 
-            echo "→ Чистим и раскладываем новый релиз"
-            rm -rf "$APP_DIR"/*
-            tar -xzf "$TARBALL" -C "$APP_DIR"
+            echo "→ Раскладываем новый релиз (sudo)"
+            sudo rm -rf "${APP_DIR:?}"/*
+            sudo tar -xzf "$TARBALL" -C "$APP_DIR"
 
-            # вернуть локальный .env, если он хранился в /opt/kitchen/.env
-            if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
-              cp "$BACKUP/.env" "$APP_DIR/.env"
+            # Вернуть локальный .env, если он лежал на сервере
+            if sudo test -f "$BACKUP/.env" && ! sudo test -f "$APP_DIR/.env"; then
+              sudo cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
 
             cd "$APP_DIR"
 
-            echo "→ docker compose up -d --build"
-            docker compose up -d --build
+            echo "→ docker compose up -d --build (sudo)"
+            sudo docker compose up -d --build
 
-            echo "→ Ждём PostgreSQL и прогоняем миграции"
-            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
-            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
+            echo "→ Ждём PostgreSQL и прогоняем миграции (sudo)"
+            until sudo docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            sudo docker compose exec -T api alembic upgrade head || sudo docker compose run --rm api alembic upgrade head
 
             echo "→ Healthcheck API"
             curl -fsS http://127.0.0.1:8000/docs >/dev/null
 
-            echo "→ Удаляем бэкап (успех)"
-            rm -rf "$BACKUP"
+            echo "→ Чистим бэкап (успех) (sudo)"
+            sudo rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
