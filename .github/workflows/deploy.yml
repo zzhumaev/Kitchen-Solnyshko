@@ -16,9 +16,10 @@ jobs:
       - name: Make release tarball
         run: |
           set -euo pipefail
-          RELEASE="release-${GITHUB_SHA}.tgz"   # кладём в текущий каталог (workspace)
+          RELEASE="release-${GITHUB_SHA}.tgz"   # кладём архив в корень workspace
+          # убедимся, что compose.yml существует
           test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-          # соберём архив из нужных путей; отсутствующие каталоги не критичны
+          # собираем архив; отсутствующие пути не ломают сборку
           tar -czf "$RELEASE" \
             --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
             backend docs compose.yml compose.dev.yml 2>/dev/null || true
@@ -32,7 +33,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "release-${{ github.sha }}.tgz"   # относительный путь в workspace
+          source: "release-${{ github.sha }}.tgz"   # относительный путь внутри workspace
           target: "/tmp"
           overwrite: true
           rm: false
@@ -47,9 +48,13 @@ jobs:
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
+            SHA="${{ github.sha }}"                       # берём SHA из GitHub Actions
             APP_DIR="/opt/kitchen"
-            TARBALL="/tmp/release-${GITHUB_SHA}.tgz"
+            TARBALL="/tmp/release-${SHA}.tgz"
             BACKUP="/opt/kitchen.bak.$(date +%Y%m%d-%H%M%S)"
+
+            echo "→ Проверяем, что архив есть на сервере:"
+            ls -lh "$TARBALL"
 
             echo "→ Бэкапим текущий /opt/kitchen (если есть) в $BACKUP"
             if [ -d "$APP_DIR" ]; then cp -a "$APP_DIR" "$BACKUP"; else mkdir -p "$APP_DIR"; fi
@@ -66,7 +71,7 @@ jobs:
             rm -rf "$APP_DIR"/*
             tar -xzf "$TARBALL" -C "$APP_DIR"
 
-            # вернуть локальный .env, если он хранится на сервере
+            # вернуть локальный .env, если он хранился в /opt/kitchen/.env
             if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
               cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
