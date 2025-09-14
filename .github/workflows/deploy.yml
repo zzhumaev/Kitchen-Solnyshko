@@ -16,10 +16,9 @@ jobs:
       - name: Make release tarball
         run: |
           set -euo pipefail
-          RELEASE="/tmp/release-${GITHUB_SHA}.tgz"
-          # убеждаемся, что есть compose.yml
+          RELEASE="release-${GITHUB_SHA}.tgz"   # кладём в текущий каталог (workspace)
           test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-          # собираем архив из нужных путей
+          # соберём архив из нужных путей; отсутствующие каталоги не критичны
           tar -czf "$RELEASE" \
             --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
             backend docs compose.yml compose.dev.yml 2>/dev/null || true
@@ -33,7 +32,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "/tmp/release-${{ github.sha }}.tgz"
+          source: "release-${{ github.sha }}.tgz"   # относительный путь в workspace
           target: "/tmp"
           overwrite: true
           rm: false
@@ -74,7 +73,6 @@ jobs:
 
             cd "$APP_DIR"
 
-            # Если хочешь слушать только локально за Nginx, поставь 127.0.0.1:8000 в compose.yml
             echo "→ docker compose up -d --build"
             docker compose up -d --build
 
