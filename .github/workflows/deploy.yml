@@ -8,22 +8,24 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show workspace tree
+      - name: Make release tarball
         run: |
-          pwd
-          ls -la
-          echo "---- backend ----"
-          ls -la backend || true
-          echo "---- docs ----"
-          ls -la docs || true
-          echo "---- compose files ----"
-          ls -la compose.yml compose.dev.yml || true
+          set -euo pipefail
+          RELEASE="/tmp/release-${GITHUB_SHA}.tgz"
+          # Обязательно: compose.yml должен быть в репо
+          test -e compose.yml || { echo "compose.yml not found"; exit 1; }
+          # Собираем архив из нужных путей (без .git/.github/venv/node_modules)
+          tar -czf "$RELEASE" \
+            --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
+            backend docs compose.yml compose.dev.yml || true
+          ls -lh "$RELEASE"
 
-      - name: Upload files to VPS
+      - name: Upload tarball to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -31,20 +33,16 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: |
-            backend/**
-            docs/**
-            compose.yml
-            compose.dev.yml
-            .gitignore
-          target: /opt/kitchen
+          source: "/tmp/release-${{ github.sha }}.tgz"
+          target: "/tmp"
           overwrite: true
           rm: false
-          strip_components: 0
           debug: true
 
-      - name: Build & restart with Docker
+      - name: Deploy on VPS
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          SHA: ${{ github.sha }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
@@ -53,20 +51,44 @@ jobs:
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
-            cd /opt/kitchen
+
+            APP_DIR="/opt/kitchen"
+            TARBALL="/tmp/release-$SHA.tgz"
+            BACKUP="/opt/kitchen.bak.$(date +%Y%m%d-%H%M%S)"
+
+            echo "→ Бэкапим текущую папку в $BACKUP"
+            cp -a "$APP_DIR" "$BACKUP"
+
+            # Функция отката, если что-то пойдёт не так
+            rollback() {
+              echo "!! Ошибка. Откат до бэкапа"
+              rm -rf "$APP_DIR"
+              mv "$BACKUP" "$APP_DIR"
+              exit 1
+            }
+            trap 'rollback' ERR
+
+            echo "→ Чистим и раскладываем новый релиз"
+            rm -rf "$APP_DIR"/*
+            tar -xzf "$TARBALL" -C "$APP_DIR"
+
+            # Если .env хранится на сервере — вернём его в корень проекта
+            if [ -f "$BACKUP/.env" ]; then
+              cp "$BACKUP/.env" "$APP_DIR/.env"
+            fi
+
+            cd "$APP_DIR"
+            echo "→ docker compose up -d --build"
             docker compose up -d --build
 
-      - name: Migrate DB & health check
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          script: |
-            set -euo pipefail
-            cd /opt/kitchen
+            echo "→ Ждём БД и прогоняем миграции"
             until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
             docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
-            curl -fsS http://127.0.0.1:8000/docs >/dev/null && echo "API OK"
+
+            echo "→ Healthcheck API"
+            curl -fsS http://127.0.0.1:8000/docs >/dev/null
+
+            echo "→ Удаляем бэкап (успешно отработали)"
+            rm -rf "$BACKUP"
+
+            echo "✅ Деплой завершён"
