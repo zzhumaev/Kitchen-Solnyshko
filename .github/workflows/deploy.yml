@@ -39,12 +39,17 @@ jobs:
 
       - name: Deploy on VPS (unpack, compose up, migrate, healthcheck)
         uses: appleboy/ssh-action@v1.0.3
+        # 1) переменная доступна шагу экшена
+        env:
+          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # если SSH не на 22, добавь: port: ${{ secrets.SSH_PORT }}
+          # 2) и явно прокидываем её внутрь SSH-сессии
+          envs: SUDO_PASSWORD
+          # если SSH не на 22: port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
             SHA="${{ github.sha }}"
@@ -98,5 +103,3 @@ jobs:
             s rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
-        env:
-          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}
