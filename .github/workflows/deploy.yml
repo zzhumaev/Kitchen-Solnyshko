@@ -11,11 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: List files
+      # 👇 Диагностика содержимого workspace
+      - name: Show workspace tree
         run: |
+          echo "PWD:"
           pwd
+          echo "ROOT:"
           ls -la
-          test -d backend || (echo "backend/ not found" && exit 1)
+          echo "---- backend ----"
+          ls -la backend || true
+          echo "---- docs ----"
+          ls -la docs || true
+          echo "---- compose files ----"
+          ls -la compose.yml compose.dev.yml || true
 
       - name: Upload files to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -25,11 +33,12 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          # 👇 Явные glob'ы, чтобы избежать "tar: empty archive"
           source: |
-            backend
+            backend/**
+            docs/**
             compose.yml
             compose.dev.yml
-            docs
             .gitignore
           target: /opt/kitchen
           overwrite: true
@@ -40,30 +49,3 @@ jobs:
       - name: Build & restart with Docker
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          script: |
-            set -euo pipefail
-            cd /opt/kitchen
-            docker compose up -d --build
-
-      - name: Migrate DB & health check
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          script: |
-            set -euo pipefail
-            cd /opt/kitchen
-            # ждём Postgres
-            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
-            # применяем миграции
-            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
-            # быстрый health-check API на сервере
-            curl -fsS http://127.0.0.1:8000/docs >/dev/null && echo "API OK"
