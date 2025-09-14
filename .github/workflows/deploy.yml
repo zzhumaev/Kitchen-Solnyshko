@@ -16,10 +16,8 @@ jobs:
       - name: Make release tarball
         run: |
           set -euo pipefail
-          RELEASE="release-${GITHUB_SHA}.tgz"   # архив в корне workspace
-          # проверяем, что есть compose.yml
+          RELEASE="release-${GITHUB_SHA}.tgz"
           test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-          # собираем архив; отсутствующие пути не критичны
           tar -czf "$RELEASE" \
             --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
             backend docs compose.yml compose.dev.yml 2>/dev/null || true
@@ -33,7 +31,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "release-${{ github.sha }}.tgz"   # относительный путь в workspace
+          source: "release-${{ github.sha }}.tgz"
           target: "/tmp"
           overwrite: true
           rm: false
@@ -46,7 +44,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # если SSH у тебя НЕ на 22 порту, добавь: port: ${{ secrets.SSH_PORT }}
+          # если SSH не на 22, добавь: port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
             SHA="${{ github.sha }}"
@@ -55,46 +53,50 @@ jobs:
             TARBALL="/tmp/release-${SHA}.tgz"
             BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
+            # helper: sudo с паролем из секрета
+            s() { echo "${SUDO_PASSWORD}" | sudo -S -p "" "$@"; }
+
             echo "→ Проверяем архив на сервере:"
             ls -lh "$TARBALL"
 
-            echo "→ Готовим каталоги (sudo)"
-            sudo mkdir -p "$APP_DIR" "$BACKUPS"
+            echo "→ Готовим каталоги"
+            s mkdir -p "$APP_DIR" "$BACKUPS"
 
-            echo "→ Бэкапим $APP_DIR → $BACKUP (sudo)"
-            # -a сохраняет права/владельцев; в /opt нужны root-права
-            sudo cp -a "$APP_DIR" "$BACKUP" || true
+            echo "→ Бэкапим $APP_DIR → $BACKUP"
+            s cp -a "$APP_DIR" "$BACKUP" || true
 
             rollback() {
               echo "!! Ошибка. Откат: восстанавливаем из бэкапа"
-              sudo rm -rf "$APP_DIR"
-              sudo cp -a "$BACKUP" "$APP_DIR"
+              s rm -rf "$APP_DIR"
+              s cp -a "$BACKUP" "$APP_DIR"
               exit 1
             }
             trap 'rollback' ERR
 
-            echo "→ Раскладываем новый релиз (sudo)"
-            sudo rm -rf "${APP_DIR:?}"/*
-            sudo tar -xzf "$TARBALL" -C "$APP_DIR"
+            echo "→ Раскладываем новый релиз"
+            s rm -rf "${APP_DIR:?}"/*
+            s tar -xzf "$TARBALL" -C "$APP_DIR"
 
-            # Вернуть локальный .env, если он лежал на сервере
-            if sudo test -f "$BACKUP/.env" && ! sudo test -f "$APP_DIR/.env"; then
-              sudo cp "$BACKUP/.env" "$APP_DIR/.env"
+            # вернуть локальный .env, если он лежал на сервере
+            if s test -f "$BACKUP/.env" && ! s test -f "$APP_DIR/.env"; then
+              s cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
 
             cd "$APP_DIR"
 
-            echo "→ docker compose up -d --build (sudo)"
-            sudo docker compose up -d --build
+            echo "→ docker compose up -d --build"
+            s docker compose up -d --build
 
-            echo "→ Ждём PostgreSQL и прогоняем миграции (sudo)"
-            until sudo docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
-            sudo docker compose exec -T api alembic upgrade head || sudo docker compose run --rm api alembic upgrade head
+            echo "→ Ждём PostgreSQL и прогоняем миграции"
+            until s docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            s docker compose exec -T api alembic upgrade head || s docker compose run --rm api alembic upgrade head
 
             echo "→ Healthcheck API"
             curl -fsS http://127.0.0.1:8000/docs >/dev/null
 
-            echo "→ Чистим бэкап (успех) (sudo)"
-            sudo rm -rf "$BACKUP"
+            echo "→ Чистим бэкап (успех)"
+            s rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
+        env:
+          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}
