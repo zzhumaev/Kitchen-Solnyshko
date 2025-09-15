@@ -1,0 +1,16 @@
+# Игнорируем мусор и тяжёлые директории
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+*.db
+.venv
+.env
+.env.*
+node_modules/
+dist/
+build/
