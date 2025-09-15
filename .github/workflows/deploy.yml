@@ -13,95 +13,68 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Make release tarball
+      # Просто для наглядности в логах
+      - name: Sanity check
         run: |
-          set -euo pipefail
-          RELEASE="release-${GITHUB_SHA}.tgz"
-          test -e compose.yml || { echo "compose.yml not found"; exit 1; }
-          tar -czf "$RELEASE" \
-            --exclude=.git --exclude=.github --exclude=node_modules --exclude=.venv \
-            backend docs compose.yml compose.dev.yml 2>/dev/null || true
-          ls -lh "$RELEASE"
-          test -s "$RELEASE" || { echo "release tgz is empty"; exit 1; }
+          pwd
+          ls -la
+          test -d backend || (echo "backend/ not found" && exit 1)
+          test -f compose.yml || (echo "compose.yml not found" && exit 1)
 
-      - name: Upload tarball via SCP
+      # ⚠️ Никаких архивов и rm на сервере — только синхронизация нужных путей
+      - name: Upload project to /opt/kitchen via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: root
+          username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          source: "release-${{ github.sha }}.tgz"
-          target: "/tmp"
+          # Копируем только то, что нужно для деплоя
+          source: |
+            backend/**
+            compose.yml
+            compose.dev.yml
+            docs/**
+            .gitignore
+          target: /opt/kitchen
           overwrite: true
           rm: false
+          strip_components: 0
           debug: true
+          # port: ${{ secrets.SSH_PORT }} # если используешь нестандартный порт — раскомментируй
 
-      - name: Deploy on VPS
+      - name: Deploy on VPS (compose up + migrations + healthcheck)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: root
+          username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           script: |
             set -euo pipefail
-            SHA="${{ github.sha }}"
-            APP_DIR="/opt/kitchen"
-            BACKUPS="/opt/kitchen_backups"
-            TARBALL="/tmp/release-${SHA}.tgz"
-            BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
-            echo "→ Preflight"
-            whoami; id
-            ls -lh "$TARBALL"
+            cd /opt/kitchen
 
-            mkdir -p "$APP_DIR" "$BACKUPS"
-
-            echo "→ docker compose down (если было запущено)"
-            cd "$APP_DIR" || mkdir -p "$APP_DIR"; cd "$APP_DIR"
-            docker compose down || true
-
-            echo "→ Backup текущего кода"
-            cp -a "$APP_DIR" "$BACKUP" || true
-
-            rollback() {
-              echo "!! Rollback"
-              rm -rf "$APP_DIR"
-              cp -a "$BACKUP" "$APP_DIR"
-              exit 1
-            }
-            trap 'rollback' ERR
-
-            echo "→ Чистим каталог, оставляем .env"
-            shopt -s dotglob
-            for p in "$APP_DIR"/*; do
-              base=$(basename "$p")
-              if [ "$base" = ".env" ]; then
-                continue
-              fi
-              rm -rf "$p"
-            done
-            shopt -u dotglob
-
-            echo "→ Распаковываем релиз"
-            tar -xzf "$TARBALL" -C "$APP_DIR"
-
-            if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
-              cp "$BACKUP/.env" "$APP_DIR/.env"
+            # Если прошлые попытки оставили root-владельца/права — мягко починим.
+            if command -v sudo >/dev/null 2>&1; then
+              sudo chown -R "$USER":"$USER" /opt/kitchen || true
             fi
+
+            echo "→ docker compose pull (best effort)"
+            docker compose pull || true
 
             echo "→ docker compose up -d --build"
             docker compose up -d --build
 
-            echo "→ Ждём БД и накатываем миграции"
-            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            echo "→ Wait for PostgreSQL"
+            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do
+              sleep 1
+            done
+
+            echo "→ Alembic migrations"
             docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
 
-            echo "→ Healthcheck"
+            echo "→ Healthcheck API"
             curl -fsS http://127.0.0.1:8000/docs >/dev/null
-
-            echo "→ Убираем бэкап (успех)"
-            rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
