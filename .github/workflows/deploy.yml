@@ -1,94 +1,49 @@
-name: Deploy to VPS
+version: "3.9"
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: kitchen
+      POSTGRES_USER: kitchen
+      POSTGRES_PASSWORD: change_me
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    restart: unless-stopped
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  api:
+    build:
+      context: ./backend/app
+      dockerfile: Dockerfile
+    working_dir: /app
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+      ALEMBIC_DATABASE_URL: ${DATABASE_URL}
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      db:
+        condition: service_started
+    # публикуем API только на loopback
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+  bot:
+    build:
+      context: ./backend/app
+      dockerfile: Dockerfile
+    working_dir: /app
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+    command: python -m bot
+    depends_on:
+      db:
+        condition: service_started
+    restart: unless-stopped
 
-      - name: Sanity check
-        run: |
-          set -e
-          pwd
-          ls -la
-          test -d backend || (echo "backend/ not found" && exit 1)
-          test -f compose.yml || (echo "compose.yml not found" && exit 1)
-          test -f compose.dev.yml || echo "compose.dev.yml: not present (ok)"
-          test -d docs || echo "docs/: not present (ok)"
-
-      # 🚧 Сделать /opt/kitchen доступным твоему SSH-пользователю
-      - name: Prepare target dir on VPS (fix owner/perm)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -e
-            ME="$(whoami)"
-            echo "Logged in as: $ME"
-            sudo mkdir -p /opt/kitchen
-            # отдать каталог твоему пользователю, чтобы scp-action мог распаковать архив
-            sudo chown -R "$ME":"$ME" /opt/kitchen
-
-      # ⬆️ теперь распаковка пройдёт без Permission denied
-      - name: Upload project to /opt/kitchen via SCP
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # ВАЖНО: одна строка, через запятую, с префиксом ./ (чтобы не словить "empty archive")
-          source: "./backend/**,./docs/**,./compose.yml,./compose.dev.yml,./.gitignore"
-          target: "/opt/kitchen"
-          overwrite: true
-          rm: false
-          strip_components: 0
-          debug: true
-          # port: ${{ secrets.SSH_PORT }}
-
-      - name: Deploy on VPS (compose up + migrations + healthcheck)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # port: ${{ secrets.SSH_PORT }}
-          script: |
-            set -euo pipefail
-            cd /opt/kitchen
-
-            # На всякий случай — если что-то опять стало рута, вернуть себе
-            if command -v sudo >/dev/null 2>&1; then
-              sudo chown -R "$USER":"$USER" /opt/kitchen || true
-            fi
-
-            echo "→ docker compose pull (best effort)"
-            docker compose pull || true
-
-            echo "→ docker compose up -d --build"
-            docker compose up -d --build
-
-            echo "→ Wait for PostgreSQL"
-            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do
-              sleep 1
-            done
-
-            echo "→ Alembic migrations"
-            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
-
-            echo "→ Healthcheck API"
-            curl -fsS http://127.0.0.1:8000/docs >/dev/null
-
-            echo "✅ Deploy OK"
+volumes:
+  dbdata:
