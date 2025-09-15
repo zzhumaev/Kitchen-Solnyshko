@@ -20,26 +20,42 @@ jobs:
           ls -la
           test -d backend || (echo "backend/ not found" && exit 1)
           test -f compose.yml || (echo "compose.yml not found" && exit 1)
-          # эти два могут отсутствовать — не критично:
           test -f compose.dev.yml || echo "compose.dev.yml: not present (ok)"
           test -d docs || echo "docs/: not present (ok)"
 
-      # Без архивов и удалений — просто синхронизируем нужные пути
+      # 🚧 Сделать /opt/kitchen доступным твоему SSH-пользователю
+      - name: Prepare target dir on VPS (fix owner/perm)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          # port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            ME="$(whoami)"
+            echo "Logged in as: $ME"
+            sudo mkdir -p /opt/kitchen
+            # отдать каталог твоему пользователю, чтобы scp-action мог распаковать архив
+            sudo chown -R "$ME":"$ME" /opt/kitchen
+
+      # ⬆️ теперь распаковка пройдёт без Permission denied
       - name: Upload project to /opt/kitchen via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}       # как раньше, по ключу
+          username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # ВАЖНО: одна строка, через запятую, с префиксом ./
+          # ВАЖНО: одна строка, через запятую, с префиксом ./ (чтобы не словить "empty archive")
           source: "./backend/**,./docs/**,./compose.yml,./compose.dev.yml,./.gitignore"
           target: "/opt/kitchen"
           overwrite: true
           rm: false
           strip_components: 0
           debug: true
-          # port: ${{ secrets.SSH_PORT }}          # раскомментируй, если не 22
+          # port: ${{ secrets.SSH_PORT }}
 
       - name: Deploy on VPS (compose up + migrations + healthcheck)
         uses: appleboy/ssh-action@v1.0.3
@@ -51,10 +67,9 @@ jobs:
           # port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
-
             cd /opt/kitchen
 
-            # Если в прошлых прогонах что-то стало root'ом — мягко починим права
+            # На всякий случай — если что-то опять стало рута, вернуть себе
             if command -v sudo >/dev/null 2>&1; then
               sudo chown -R "$USER":"$USER" /opt/kitchen || true
             fi
