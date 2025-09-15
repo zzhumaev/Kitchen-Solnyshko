@@ -13,35 +13,33 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Просто для наглядности в логах
       - name: Sanity check
         run: |
+          set -e
           pwd
           ls -la
           test -d backend || (echo "backend/ not found" && exit 1)
           test -f compose.yml || (echo "compose.yml not found" && exit 1)
+          # эти два могут отсутствовать — не критично:
+          test -f compose.dev.yml || echo "compose.dev.yml: not present (ok)"
+          test -d docs || echo "docs/: not present (ok)"
 
-      # ⚠️ Никаких архивов и rm на сервере — только синхронизация нужных путей
+      # Без архивов и удалений — просто синхронизируем нужные пути
       - name: Upload project to /opt/kitchen via SCP
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
+          username: ${{ secrets.SSH_USER }}       # как раньше, по ключу
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          # Копируем только то, что нужно для деплоя
-          source: |
-            backend/**
-            compose.yml
-            compose.dev.yml
-            docs/**
-            .gitignore
-          target: /opt/kitchen
+          # ВАЖНО: одна строка, через запятую, с префиксом ./
+          source: "./backend/**,./docs/**,./compose.yml,./compose.dev.yml,./.gitignore"
+          target: "/opt/kitchen"
           overwrite: true
           rm: false
           strip_components: 0
           debug: true
-          # port: ${{ secrets.SSH_PORT }} # если используешь нестандартный порт — раскомментируй
+          # port: ${{ secrets.SSH_PORT }}          # раскомментируй, если не 22
 
       - name: Deploy on VPS (compose up + migrations + healthcheck)
         uses: appleboy/ssh-action@v1.0.3
@@ -50,12 +48,13 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          # port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
 
             cd /opt/kitchen
 
-            # Если прошлые попытки оставили root-владельца/права — мягко починим.
+            # Если в прошлых прогонах что-то стало root'ом — мягко починим права
             if command -v sudo >/dev/null 2>&1; then
               sudo chown -R "$USER":"$USER" /opt/kitchen || true
             fi
