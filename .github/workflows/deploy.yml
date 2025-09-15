@@ -9,23 +9,32 @@ services:
       POSTGRES_PASSWORD: change_me
     volumes:
       - dbdata:/var/lib/postgresql/data
+    # оставим порт только на localhost (чтобы не светить наружу)
     ports:
       - "127.0.0.1:5432:5432"
     restart: unless-stopped
 
   api:
+    # собираем из каталога с Dockerfile и кодом
     build:
       context: ./backend/app
       dockerfile: Dockerfile
     working_dir: /app
     env_file: .env
     environment:
+      # чтобы импорты вида "from db..." работали и в рантайме, и в alembic
       PYTHONPATH: /app
-      ALEMBIC_DATABASE_URL: ${DATABASE_URL}
+      # дефолты БД, если их нет в .env
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://kitchen:change_me@db:5432/kitchen}
+      ALEMBIC_DATABASE_URL: ${ALEMBIC_DATABASE_URL:-${DATABASE_URL:-postgresql+psycopg2://kitchen:change_me@db:5432/kitchen}}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_DB: ${POSTGRES_DB:-kitchen}
+      POSTGRES_USER: ${POSTGRES_USER:-kitchen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    # после переноса модулей точка входа стала main:app
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     depends_on:
-      db:
-        condition: service_started
+      - db
     # публикуем API только на loopback
     ports:
       - "127.0.0.1:8000:8000"
@@ -39,10 +48,16 @@ services:
     env_file: .env
     environment:
       PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://kitchen:change_me@db:5432/kitchen}
+      ALEMBIC_DATABASE_URL: ${ALEMBIC_DATABASE_URL:-${DATABASE_URL:-postgresql+psycopg2://kitchen:change_me@db:5432/kitchen}}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_DB: ${POSTGRES_DB:-kitchen}
+      POSTGRES_USER: ${POSTGRES_USER:-kitchen}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    # модуль теперь без префикса app
     command: python -m bot
     depends_on:
-      db:
-        condition: service_started
+      - db
     restart: unless-stopped
 
 volumes:
