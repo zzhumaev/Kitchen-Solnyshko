@@ -5,32 +5,24 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# === Сделать /app видимым для Python ===
-BASE_DIR = Path(__file__).resolve().parents[1]  # -> /app
+# --- Пути
+BASE_DIR = Path(__file__).resolve().parents[1]  # /app
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-# === Импорты проекта ===
-from app.db.base import Base  # noqa: F401
-
-# Подтянуть модели, если есть (оба варианта путей)
-for mod in ("app.models", "app.db.models"):
-    try:
-        __import__(mod)
-    except Exception as e:
-        print(f"[alembic] warn: cannot import {mod}: {e}")
-
-# Alembic config
+# --- Alembic config / logging
 config = context.config
-
-# Логи Alembic из alembic.ini
 if config.config_file_name:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# URL БД из окружения контейнера
-db_url = os.getenv("DATABASE_URL", "")
+# --- URL БД: сначала ALEMBIC_DATABASE_URL, потом DATABASE_URL, иначе alembic.ini
+db_url = os.getenv("ALEMBIC_DATABASE_URL") or os.getenv("DATABASE_URL")
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
+
+# --- Импорты проекта (плоская схема модулей)
+from db.base import Base  # noqa: E402
+import db.models  # noqa: F401  # важно подтянуть модели
 
 target_metadata = Base.metadata
 
