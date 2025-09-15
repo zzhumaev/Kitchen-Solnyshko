@@ -17,9 +17,15 @@ jobs:
         run: |
           set -euo pipefail
           RELEASE="release-${GITHUB_SHA}.tgz"
+          # обязательный файл
           test -e compose.yml || { echo "compose.yml not found"; exit 1; }
+          # собираем архив; исключаем локальные окружения, кеши и секреты
           tar -czf "$RELEASE" \
-            --exclude=.git --exclude=.github --exclude=.venv --exclude=node_modules \
+            --exclude=.git --exclude=.github --exclude=node_modules --exclude=.venv \
+            --exclude='**/.venv' --exclude='**/__pycache__' \
+            --exclude='**/.mypy_cache' --exclude='**/.pytest_cache' \
+            --exclude='**/.DS_Store' \
+            --exclude='**/.env' --exclude='**/.env.*' \
             backend docs compose.yml compose.dev.yml 2>/dev/null || true
           ls -lh "$RELEASE"
           test -s "$RELEASE" || { echo "release tgz is empty"; exit 1; }
@@ -44,6 +50,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          # если SSH не на 22, добавь: port: ${{ secrets.SSH_PORT }}
           script: |
             set -euo pipefail
             SHA="${{ github.sha }}"
@@ -53,10 +60,8 @@ jobs:
             BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
             echo "→ Preflight:"
-            whoami
-            id
-            echo "→ Archive on server:"
-            ls -lh "$TARBALL"
+            whoami; id
+            echo "→ Archive on server:"; ls -lh "$TARBALL"
 
             echo "→ Prepare dirs"
             mkdir -p "$APP_DIR" "$BACKUPS"
@@ -72,11 +77,21 @@ jobs:
             }
             trap 'rollback' ERR
 
+            echo "→ Clean APP_DIR but keep .env"
+            shopt -s dotglob
+            for p in "$APP_DIR"/*; do
+              base="$(basename "$p")"
+              if [ "$base" = ".env" ]; then
+                continue
+              fi
+              rm -rf "$p" || true
+            done
+            shopt -u dotglob
+
             echo "→ Unpack new release"
-            rm -rf "${APP_DIR:?}"/*
             tar -xzf "$TARBALL" -C "$APP_DIR"
 
-            # restore .env if existed on server
+            # если .env был только в бэкапе — вернём
             if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
               cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
