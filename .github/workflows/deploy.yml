@@ -39,14 +39,11 @@ jobs:
 
       - name: Deploy on VPS (unpack, compose up, migrate, healthcheck)
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          SUDO_PASSWORD: ${{ secrets.SUDO_PASSWORD }}   # можно убрать, если настроишь NOPASSWD
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          envs: SUDO_PASSWORD
           script: |
             set -euo pipefail
             SHA="${{ github.sha }}"
@@ -55,19 +52,6 @@ jobs:
             TARBALL="/tmp/release-${SHA}.tgz"
             BACKUP="${BACKUPS}/$(date +%Y%m%d-%H%M%S)"
 
-            # sudo helper: сначала пробуем без пароля (NOPASSWD), потом с паролем
-            s() {
-              if sudo -n true 2>/dev/null; then
-                sudo "$@"
-              else
-                if [ -z "${SUDO_PASSWORD:-}" ]; then
-                  echo "ERROR: SUDO_PASSWORD is not set and NOPASSWD is not enabled for $(whoami)" >&2
-                  exit 1
-                fi
-                echo "${SUDO_PASSWORD}" | sudo -S -p "" "$@"
-              fi
-            }
-
             echo "→ Preflight:"
             whoami
             id
@@ -75,41 +59,41 @@ jobs:
             ls -lh "$TARBALL"
 
             echo "→ Prepare dirs"
-            s mkdir -p "$APP_DIR" "$BACKUPS"
+            mkdir -p "$APP_DIR" "$BACKUPS"
 
             echo "→ Backup $APP_DIR → $BACKUP"
-            s cp -a "$APP_DIR" "$BACKUP" || true
+            cp -a "$APP_DIR" "$BACKUP" || true
 
             rollback() {
               echo "!! Rollback: restore from backup"
-              s rm -rf "$APP_DIR"
-              s cp -a "$BACKUP" "$APP_DIR"
+              rm -rf "$APP_DIR"
+              cp -a "$BACKUP" "$APP_DIR"
               exit 1
             }
             trap 'rollback' ERR
 
             echo "→ Unpack new release"
-            s rm -rf "${APP_DIR:?}"/*
-            s tar -xzf "$TARBALL" -C "$APP_DIR"
+            rm -rf "${APP_DIR:?}"/*
+            tar -xzf "$TARBALL" -C "$APP_DIR"
 
             # restore .env if existed on server
-            if s test -f "$BACKUP/.env" && ! s test -f "$APP_DIR/.env"; then
-              s cp "$BACKUP/.env" "$APP_DIR/.env"
+            if [ -f "$BACKUP/.env" ] && [ ! -f "$APP_DIR/.env" ]; then
+              cp "$BACKUP/.env" "$APP_DIR/.env"
             fi
 
             cd "$APP_DIR"
 
             echo "→ docker compose up -d --build"
-            s docker compose up -d --build
+            docker compose up -d --build
 
             echo "→ Wait DB & run migrations"
-            until s docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
-            s docker compose exec -T api alembic upgrade head || s docker compose run --rm api alembic upgrade head
+            until docker compose exec -T db bash -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h localhost'; do sleep 1; done
+            docker compose exec -T api alembic upgrade head || docker compose run --rm api alembic upgrade head
 
             echo "→ Healthcheck"
             curl -fsS http://127.0.0.1:8000/docs >/dev/null
 
             echo "→ Cleanup backup (success)"
-            s rm -rf "$BACKUP"
+            rm -rf "$BACKUP"
 
             echo "✅ Deploy OK"
